@@ -3,6 +3,9 @@
     "dev": "node src/server.js",
     "start": "node src/server.js"
   },
+  "engines": {
+    "node": "20.x"
+  },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
