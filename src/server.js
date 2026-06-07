@@ -1,4 +1,4 @@
-require('dotenv').config();
+ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
@@ -10,7 +10,7 @@ const Tesseract = require('tesseract.js');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
-const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 const upload = multer({ dest: 'uploads/' });
 
 app.use(cors());
@@ -380,10 +380,45 @@ async function analyzeReceipt(filePath) {
 }
 
 function getBaseUrl(req) {
-  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL.replace(/\/$/, '');
+  if (PUBLIC_BASE_URL) return PUBLIC_BASE_URL;
 
-  const host = req.get('host') || 'localhost:4000';
+  const host = req.get('host') || '';
+  if (!host) return '';
   return `${req.protocol}://${host}`;
+}
+
+function normalizeFileUrl(value, req) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  const baseUrl = getBaseUrl(req);
+  if (!baseUrl) return raw;
+
+  const localHostPattern = /^(localhost|127\.0\.0\.1|0\.0\.0\.0|192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)/;
+
+  if (raw.startsWith('/api/') || raw.startsWith('/uploads/')) {
+    return `${baseUrl}${raw}`;
+  }
+
+  try {
+    const url = new URL(raw);
+    const isBackendFile = url.pathname.startsWith('/api/receipt-image/') || url.pathname.startsWith('/uploads/');
+
+    if (isBackendFile || localHostPattern.test(url.hostname)) {
+      return `${baseUrl}${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+    return raw;
+  }
+
+  return raw;
+}
+
+function normalizeReceipt(row, req) {
+  return {
+    ...row,
+    image_url: normalizeFileUrl(row.image_url, req)
+  };
 }
 
 function buildReceiptMonthFilter(month, year) {
@@ -642,7 +677,7 @@ app.post('/api/receipts', (req, res) => {
     vehicle_plate: req.body.vehicle_plate || '',
     note: req.body.note || '',
     ocr_raw_text: req.body.ocr_raw_text || '',
-    image_url: req.body.image_url || '',
+    image_url: normalizeFileUrl(req.body.image_url, req),
     created_at: new Date().toISOString()
   };
 
@@ -651,7 +686,7 @@ app.post('/api/receipts', (req, res) => {
     Object.values(r),
     err => {
       if (err) return res.status(500).json({ error: err.message });
-      res.json(r);
+      res.json(normalizeReceipt(r, req));
     }
   );
 });
@@ -659,7 +694,7 @@ app.post('/api/receipts', (req, res) => {
 app.get('/api/receipts', (req, res) => {
   db.all(`SELECT * FROM receipts ORDER BY created_at DESC`, [], (err, rows) => {
     if (err) return res.status(500).json({ error: err.message });
-    res.json(rows);
+    res.json(rows.map(row => normalizeReceipt(row, req)));
   });
 });
 app.put('/api/receipts/:id', (req, res) => {
@@ -704,7 +739,7 @@ app.put('/api/receipts/:id', (req, res) => {
       r.vehicle_plate || '',
       r.note || '',
       r.ocr_raw_text || '',
-      r.image_url || '',
+      normalizeFileUrl(r.image_url, req),
       req.params.id
     ],
     err => {
@@ -747,7 +782,8 @@ app.get('/api/public/report/:token', (req, res) => {
     db.all(`SELECT * FROM receipts ORDER BY receipt_date DESC`, [], (err2, allRows) => {
       if (err2) return res.status(500).send(err2.message);
 
-      const rows = filterReceiptsByPeriod(allRows, link.month, link.year);
+      const rows = filterReceiptsByPeriod(allRows, link.month, link.year)
+        .map(row => normalizeReceipt(row, req));
       const reportPeriod = formatReportPeriod(link.month, link.year);
       const money = v => Number(String(v || '0').replace(',', '.')) || 0;
       const total = rows.reduce((s, r) => s + money(r.grand_total), 0);
@@ -993,7 +1029,8 @@ db.all(`SELECT * FROM receipts ORDER BY receipt_date DESC`, [], async (err, allR
     if (err) return res.status(500).json({ error: err.message });
 
     const ExcelJS = require('exceljs');
-    const rows = filterReceiptsByPeriod(allRows, month, year);
+    const rows = filterReceiptsByPeriod(allRows, month, year)
+      .map(row => normalizeReceipt(row, req));
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Gider Fişleri');
 
@@ -1196,5 +1233,5 @@ db.all(`SELECT * FROM receipts ORDER BY receipt_date DESC`, [], (err, allRows) =
   });
 });
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`API çalışıyor: http://localhost:${PORT}`);
+  console.log(`API çalışıyor: 0.0.0.0:${PORT}`);
 });
